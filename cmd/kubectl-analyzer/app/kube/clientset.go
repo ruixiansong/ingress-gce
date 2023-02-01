@@ -18,6 +18,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	beconfigclient "k8s.io/ingress-gce/pkg/backendconfig/client/clientset/versioned"
 )
 
 // NewClientSet returns a new Kubernetes clientset
@@ -39,4 +40,13 @@ func getKubeConfig(kubeContext, kubeConfig string) (*rest.Config, error) {
 		loadingRules,
 		&clientcmd.ConfigOverrides{CurrentContext: kubeContext},
 	).ClientConfig()
+}
+
+func NewBackendConfigClientSet(kubeContext, kubeConfig string) (*beconfigclient.Clientset, error) {
+	config, err := getKubeConfig(kubeContext, kubeConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	return beconfigclient.NewForConfig(config)
 }
