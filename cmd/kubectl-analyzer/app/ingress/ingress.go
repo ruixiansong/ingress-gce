@@ -46,6 +46,21 @@ func CheckAllIngresses(kubeconfig, kubecontext, namespace string) {
 			Name:      ingress.Name,
 			Checks:    []*util.Check{},
 		}
+
+		// Get all the services specified in the ingress and add service names to a list.
+		svcNameList := []string{}
+		if ingress.Spec.DefaultBackend != nil {
+			svcNameList = append(svcNameList, ingress.Spec.DefaultBackend.Service.Name)
+		}
+
+		for _, svcName := range svcNameList {
+			_, res, msg := CheckServiceExistence(ingress.Namespace, svcName, client)
+			ingressRes.Checks = append(ingressRes.Checks, &util.Check{
+				Id:  "ServiceExistenceCheck",
+				Msg: msg,
+				Res: res,
+			})
+		}
 		res.Ingress = append(res.Ingress, ingressRes)
 	}
 	util.JsonReport(res)
