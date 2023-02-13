@@ -19,6 +19,7 @@ package util
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 )
 
 const (
@@ -28,29 +29,33 @@ const (
 	JSONOutput string = "json"
 )
 
+// Report represents the final output of the analyzer
 type Report struct {
-	Ingress []*Ingress `json:"ingress,omitempty" `
+	Ingress []*Ingress `json:"ingress,omitempty"`
+	Error   []string   `json:"error,omitempty"`
 }
 
+// Ingress represents the a ingress of the cluster and all the checks done on it
 type Ingress struct {
 	Namespace string   `json:"namespace"`
 	Name      string   `json:"name"`
 	Checks    []*Check `json:"checks,omitempty"`
 }
 
+// Check represents the result of a check
 type Check struct {
-	Id  string `json:"id"`
-	Msg string `json:"msg"`
-	Res string `json:"res"`
+	Name string `json:"name"`
+	Msg  string `json:"msg"`
+	Res  string `json:"res"`
 }
 
-func JsonReport(report Report) {
+func JsonReport(report Report) string {
 	jsonRaw, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
-		fmt.Println("Error Marshalling JSON")
-		fmt.Println(err)
+		fmt.Printf("Error Marshalling JSON: %s\n", jsonRaw)
+		os.Exit(1)
 	}
-	fmt.Printf("%s", jsonRaw)
+	return string(jsonRaw)
 }
 
 // SupportedOutputs returns a string list of output formats supposed by this package

@@ -26,11 +26,18 @@ import (
 	"k8s.io/ingress-gce/cmd/kubectl-analyzer/app/util"
 )
 
-func CheckAllIngresses(kubeconfig, kubecontext, namespace string) {
+func CheckAllIngresses(kubeconfig, kubecontext, namespace string) string {
+	output := util.Report{
+		Ingress: make([]*util.Ingress, 0),
+		Error:   []string{},
+	}
 	client, err := kube.NewClientSet(kubecontext, kubeconfig)
 	beconfigClient, err := kube.NewBackendConfigClientSet(kubecontext, kubeconfig)
+	feConfigClient, err := kube.NewFrontendConfigClientSet(kubecontext, kubeconfig)
 	if err != nil {
-		fmt.Printf("Error connecting to Kubernetes: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error connecting to Kubernetes: %v\n", err)
+		output.Error = append(output.Error, fmt.Sprintf("Error connecting to Kubernetes: %v", err))
+		return util.JsonReport(output)
 	}
 
 	ingressList, err := client.NetworkingV1().Ingresses(namespace).List(context.TODO(), metav1.ListOptions{})
@@ -38,19 +45,14 @@ func CheckAllIngresses(kubeconfig, kubecontext, namespace string) {
 		fmt.Printf("Error listing ingresses: %v\n", err)
 		os.Exit(1)
 	}
-	res := util.Report{
-		Ingress: []*util.Ingress{},
-	}
 	for _, ingress := range ingressList.Items {
 		ingressRes := &util.Ingress{
 			Namespace: ingress.Namespace,
 			Name:      ingress.Name,
 			Checks:    []*util.Check{},
 		}
-
-		/*
-			#TODO: add checks for ingress and frontendConfig
-		*/
+		_, res, msg := CheckFrontendConfig(&ingress, feConfigClient)
+		addCheckResult(ingressRes, "FrontendConfigCheck", msg, res)
 
 		// Get all the services specified in the ingress and add service names to a list.
 		svcNameList := []string{}
@@ -60,11 +62,7 @@ func CheckAllIngresses(kubeconfig, kubecontext, namespace string) {
 		if ingress.Spec.Rules != nil {
 			for _, rule := range ingress.Spec.Rules {
 				httpIngressRule, res, msg := CheckIngressRule(&rule)
-				ingressRes.Checks = append(ingressRes.Checks, &util.Check{
-					Id:  "IngressRuleCheck",
-					Msg: msg,
-					Res: res,
-				})
+				addCheckResult(ingressRes, "IngressRuleCheck", msg, res)
 				if httpIngressRule != nil {
 					for _, path := range rule.HTTP.Paths {
 						if path.Backend.Service != nil {
@@ -76,23 +74,21 @@ func CheckAllIngresses(kubeconfig, kubecontext, namespace string) {
 		}
 		for _, svcName := range svcNameList {
 			svc, res, msg := CheckServiceExistence(ingress.Namespace, svcName, client)
-			ingressRes.Checks = append(ingressRes.Checks, &util.Check{
-				Id:  "ServiceExistenceCheck",
-				Msg: msg,
-				Res: res,
-			})
+			addCheckResult(ingressRes, "ServiceExistenceCheck", msg, res)
 
 			// If service exists, go ahead and check other service rules.
 			if svc != nil {
 				/*
 					#TODO: add checks for other service annotations
 				*/
+				if isL7ILB(&ingress) {
+					res, msg := CheckL7ILBNegAnnotation(svc)
+					addCheckResult(ingressRes, "L7ILBNegAnnotationCheck", msg, res)
+				}
+				res, msg := CheckAppProtocolAnnotation(svc)
+				addCheckResult(ingressRes, "AppProtocolAnnotationCheck", msg, res)
 				beConfigs, res, msg := CheckBackendConfigAnnotation(svc)
-				ingressRes.Checks = append(ingressRes.Checks, &util.Check{
-					Id:  "BackendConfigAnnotationCheck",
-					Msg: msg,
-					Res: res,
-				})
+				addCheckResult(ingressRes, "BackendConfigAnnotationCheck", msg, res)
 				// If backendConfig annotation is valid, go ahead and check other backendConfig rules.
 				if beConfigs != nil {
 					// Get all the backendconfigs in the annotation and add backendconfig names to a list.
@@ -104,26 +100,27 @@ func CheckAllIngresses(kubeconfig, kubecontext, namespace string) {
 						beConfigNameList = append(beConfigNameList, beConfigName)
 					}
 					for _, beConfigName := range beConfigNameList {
-						beConfig, res, msg := CheckBackendConfigExistence(ingress.Namespace, beConfigName, beconfigClient)
-						ingressRes.Checks = append(ingressRes.Checks, &util.Check{
-							Id:  "BackendConfigExistenceCheck",
-							Msg: msg,
-							Res: res,
-						})
+						beConfig, res, msg := CheckBackendConfigExistence(ingress.Namespace, beConfigName, svcName, beconfigClient)
+						addCheckResult(ingressRes, "BackendConfigExistenceCheck", msg, res)
+
 						// If backendConfig exists, go ahead and check other backendConfig rules.
 						if beConfig != nil {
-							res, msg := CheckHealthCheckConfig(beConfig)
-							ingressRes.Checks = append(ingressRes.Checks, &util.Check{
-								Id:  "HealthCheckConfigCheck",
-								Msg: msg,
-								Res: res,
-							})
+							res, msg := CheckHealthCheckConfig(beConfig, svcName)
+							addCheckResult(ingressRes, "HealthCheckConfigCheck", msg, res)
 						}
 					}
 				}
 			}
 		}
-		res.Ingress = append(res.Ingress, ingressRes)
+		output.Ingress = append(output.Ingress, ingressRes)
 	}
-	util.JsonReport(res)
+	return util.JsonReport(output)
+}
+
+func addCheckResult(ingressRes *util.Ingress, checkName, msg, res string) {
+	ingressRes.Checks = append(ingressRes.Checks, &util.Check{
+		Name: checkName,
+		Msg:  msg,
+		Res:  res,
+	})
 }

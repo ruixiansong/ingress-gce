@@ -19,6 +19,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	beconfigclient "k8s.io/ingress-gce/pkg/backendconfig/client/clientset/versioned"
+	feconfigclient "k8s.io/ingress-gce/pkg/frontendconfig/client/clientset/versioned"
 )
 
 // NewClientSet returns a new Kubernetes clientset
@@ -27,7 +28,6 @@ func NewClientSet(kubeContext, kubeConfig string) (*kubernetes.Clientset, error)
 	if err != nil {
 		return nil, err
 	}
-
 	return kubernetes.NewForConfig(config)
 }
 
@@ -49,4 +49,13 @@ func NewBackendConfigClientSet(kubeContext, kubeConfig string) (*beconfigclient.
 	}
 
 	return beconfigclient.NewForConfig(config)
+}
+
+func NewFrontendConfigClientSet(kubeContext, kubeConfig string) (*feconfigclient.Clientset, error) {
+	config, err := getKubeConfig(kubeContext, kubeConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	return feconfigclient.NewForConfig(config)
 }
