@@ -17,6 +17,7 @@ limitations under the License.
 package syncers
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -38,6 +39,7 @@ import (
 	negtypes "k8s.io/ingress-gce/pkg/neg/types"
 	"k8s.io/ingress-gce/pkg/network"
 	"k8s.io/ingress-gce/pkg/utils"
+	"k8s.io/ingress-gce/pkg/zonegetter"
 	"k8s.io/klog/v2"
 )
 
@@ -369,11 +371,14 @@ func getEndpointZone(endpointAddress negtypes.AddressData, zoneGetter negtypes.Z
 		return "", count, negtypes.ErrEPNodeMissing
 	}
 	zone, err := zoneGetter.GetZoneForNode(*endpointAddress.NodeName)
-	if err != nil {
+	// Fail to get the node object.
+	if errors.Is(err, zonegetter.ErrNodeNotFound) {
 		count[negtypes.NodeNotFound]++
 		return zone, count, fmt.Errorf("%w: %v", negtypes.ErrEPNodeNotFound, err)
 	}
-	if zone == "" {
+
+	// providerID missing in node or zone information missing in providerID.
+	if errors.Is(err, zonegetter.ErrProviderIDNotFound) || errors.Is(err, zonegetter.ErrSplitProviderID) {
 		count[negtypes.ZoneMissing]++
 		return zone, count, fmt.Errorf("%w: zone is missing for node %v", negtypes.ErrEPZoneMissing, *endpointAddress.NodeName)
 	}
@@ -451,12 +456,22 @@ func toZoneNetworkEndpointMapDegradedMode(eds []negtypes.EndpointsData, zoneGett
 				continue
 			}
 			zone, getZoneErr := zoneGetter.GetZoneForNode(nodeName)
+
 			if getZoneErr != nil {
-				epLogger.Error(getZoneErr, "Endpoint's corresponding node does not have valid zone information, skipping", "nodeName", nodeName)
+				// Fail to get the node object.
+				if errors.Is(getZoneErr, zonegetter.ErrNodeNotFound) {
+					klog.Errorf("For endpoint %q in endpoint slice %s/%s, its corresponding node %q does not exist %v, skipping", endpointAddress.Addresses, ed.Meta.Namespace, ed.Meta.Name, nodeName, getZoneErr)
+					localEPCount[negtypes.NodeNotFound]++
+				}
+				// providerID missing in node or zone information missing in providerID.
+				if errors.Is(getZoneErr, zonegetter.ErrProviderIDNotFound) || errors.Is(getZoneErr, zonegetter.ErrSplitProviderID) {
+					klog.Errorf("For endpoint %q in endpoint slice %s/%s, its corresponding node %q does not have valid zone information: %v, skipping", endpointAddress.Addresses, ed.Meta.Namespace, ed.Meta.Name, nodeName, getZoneErr)
+					localEPCount[negtypes.ZoneMissing]++
+				}
 				metrics.PublishNegControllerErrorCountMetrics(getZoneErr, true)
-				localEPCount[negtypes.NodeNotFound]++
 				continue
 			}
+
 			if zoneNetworkEndpointMap[zone] == nil {
 				zoneNetworkEndpointMap[zone] = negtypes.NewNetworkEndpointSet()
 			}
