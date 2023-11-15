@@ -17,40 +17,39 @@ limitations under the License.
 package zonegetter
 
 import (
+	"errors"
 	"testing"
-	"time"
 
 	apiv1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	informerv1 "k8s.io/client-go/informers/core/v1"
-	"k8s.io/client-go/kubernetes/fake"
-	"k8s.io/ingress-gce/pkg/annotations"
+
 	"k8s.io/ingress-gce/pkg/utils"
 )
 
-func fakeZoneGetter() *ZoneGetter {
-	client := fake.NewSimpleClientset()
-	resyncPeriod := 1 * time.Second
-	nodeInformer := informerv1.NewNodeInformer(client, resyncPeriod, utils.NewNamespaceIndexer())
-	return &ZoneGetter{
-		NodeInformer: nodeInformer,
-	}
-}
-
-func TestGetZoneForNode(t *testing.T) {
-	nodeName := "node"
-	zone := "us-central1-a"
-	zoneGetter := fakeZoneGetter()
+func TestListZones(t *testing.T) {
+	zoneGetter := FakeZoneGetter()
 	zoneGetter.NodeInformer.GetIndexer().Add(&apiv1.Node{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: "ns",
-			Name:      nodeName,
-			Labels: map[string]string{
-				annotations.ZoneKey: zone,
-			},
+			Name: "ReadyNodeWithProviderID",
 		},
 		Spec: apiv1.NodeSpec{
-			Unschedulable: false,
+			ProviderID: "gce://foo-project/us-central1-a/bar-node",
+		},
+		Status: apiv1.NodeStatus{
+			Conditions: []apiv1.NodeCondition{
+				{
+					Type:   apiv1.NodeReady,
+					Status: apiv1.ConditionTrue,
+				},
+			},
+		},
+	})
+	zoneGetter.NodeInformer.GetIndexer().Add(&apiv1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "UnReadyNodeWithProviderID",
+		},
+		Spec: apiv1.NodeSpec{
+			ProviderID: "gce://foo-project/us-central1-b/bar-node",
 		},
 		Status: apiv1.NodeStatus{
 			Conditions: []apiv1.NodeCondition{
@@ -61,13 +60,188 @@ func TestGetZoneForNode(t *testing.T) {
 			},
 		},
 	})
-
-	ret, err := zoneGetter.GetZoneForNode(nodeName)
-	if err != nil {
-		t.Errorf("Expect error = nil, but got %v", err)
+	zoneGetter.NodeInformer.GetIndexer().Add(&apiv1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "ReadyNodeWithoutProviderID",
+		},
+		Spec: apiv1.NodeSpec{},
+		Status: apiv1.NodeStatus{
+			Conditions: []apiv1.NodeCondition{
+				{
+					Type:   apiv1.NodeReady,
+					Status: apiv1.ConditionTrue,
+				},
+			},
+		},
+	})
+	zoneGetter.NodeInformer.GetIndexer().Add(&apiv1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "UnReadyNodeWithoutProviderID",
+		},
+		Spec: apiv1.NodeSpec{},
+		Status: apiv1.NodeStatus{
+			Conditions: []apiv1.NodeCondition{
+				{
+					Type:   apiv1.NodeReady,
+					Status: apiv1.ConditionFalse,
+				},
+			},
+		},
+	})
+	zoneGetter.NodeInformer.GetIndexer().Add(&apiv1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "ReadyNodeInvalidProviderID",
+		},
+		Spec: apiv1.NodeSpec{
+			ProviderID: "gce://us-central1-c/bar-node",
+		},
+		Status: apiv1.NodeStatus{
+			Conditions: []apiv1.NodeCondition{
+				{
+					Type:   apiv1.NodeReady,
+					Status: apiv1.ConditionTrue,
+				},
+			},
+		},
+	})
+	for _, tc := range []struct {
+		desc      string
+		predicate utils.NodeConditionPredicate
+		expectLen int
+	}{
+		{
+			desc:      "List with AllNodesPredicate",
+			predicate: utils.AllNodesPredicate,
+			expectLen: 2,
+		},
+		{
+			desc:      "List with CandidateNodesPredicate",
+			predicate: utils.CandidateNodesPredicate,
+			expectLen: 1,
+		},
+		{
+			desc:      "List with CandidateNodesPredicateIncludeUnreadyExcludeUpgradingNodes",
+			predicate: utils.CandidateNodesPredicateIncludeUnreadyExcludeUpgradingNodes,
+			expectLen: 2,
+		},
+	} {
+		zones, _ := zoneGetter.ListZones(tc.predicate)
+		if len(zones) != tc.expectLen {
+			t.Errorf("For test case %q, got %d zones, want %d,", tc.desc, len(zones), tc.expectLen)
+		}
 	}
+}
 
-	if zone != ret {
-		t.Errorf("Expect zone = %q, but got %q", zone, ret)
+func TestGetZoneForNode(t *testing.T) {
+	zoneGetter := FakeZoneGetter()
+	zoneGetter.NodeInformer.GetIndexer().Add(&apiv1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "NodeWithValidProviderID",
+		},
+		Spec: apiv1.NodeSpec{
+			ProviderID: "gce://foo-project/us-central1-a/bar-node",
+		},
+	})
+	zoneGetter.NodeInformer.GetIndexer().Add(&apiv1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "NodeWithInvalidProviderID",
+		},
+		Spec: apiv1.NodeSpec{
+			ProviderID: "gce://us-central1-a/bar-node",
+		},
+	})
+	zoneGetter.NodeInformer.GetIndexer().Add(&apiv1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "NodeWithNoProviderID",
+		},
+		Spec: apiv1.NodeSpec{},
+	})
+
+	for _, tc := range []struct {
+		desc       string
+		nodeName   string
+		expectZone string
+		expectErr  error
+	}{
+		{
+			desc:       "Node not found",
+			nodeName:   "fooNode",
+			expectZone: "",
+			expectErr:  ErrNodeNotFound,
+		},
+		{
+			desc:       "Node with valid provider ID",
+			nodeName:   "NodeWithValidProviderID",
+			expectZone: "us-central1-a",
+			expectErr:  nil,
+		},
+		{
+			desc:       "Node with invalid provider ID",
+			nodeName:   "NodeWithInvalidProviderID",
+			expectZone: "",
+			expectErr:  ErrSplitProviderID,
+		},
+		{
+			desc:       "Node with no provider ID",
+			nodeName:   "NodeWithNoProviderID",
+			expectZone: "",
+			expectErr:  ErrProviderIDNotFound,
+		},
+	} {
+		zone, err := zoneGetter.GetZoneForNode(tc.nodeName)
+		if zone != tc.expectZone {
+			t.Errorf("For test case %q, got zone: %s, want: %s,", tc.desc, zone, tc.expectZone)
+		}
+		if !errors.Is(err, tc.expectErr) {
+			t.Errorf("For test case %q, got error: %s, want: %s,", tc.desc, err, tc.expectErr)
+		}
+	}
+}
+
+func TestGetZone(t *testing.T) {
+	for _, tc := range []struct {
+		desc       string
+		node       apiv1.Node
+		expectZone string
+		expectErr  error
+	}{
+		{
+			desc: "Node with valid providerID",
+			node: apiv1.Node{
+				Spec: apiv1.NodeSpec{
+					ProviderID: "gce://foo-project/us-central1-a/bar-node",
+				},
+			},
+			expectZone: "us-central1-a",
+			expectErr:  nil,
+		},
+		{
+			desc: "Node with invalid providerID",
+			node: apiv1.Node{
+				Spec: apiv1.NodeSpec{
+					ProviderID: "gce://us-central1-a/bar-node",
+				},
+			},
+			expectZone: "",
+			expectErr:  ErrSplitProviderID,
+		},
+		{
+			desc: "Node with empty providerID",
+			node: apiv1.Node{
+				Spec: apiv1.NodeSpec{
+					ProviderID: "",
+				},
+			},
+			expectZone: "",
+			expectErr:  ErrSplitProviderID,
+		},
+	} {
+		zone, err := getZone(&tc.node)
+		if zone != tc.expectZone {
+			t.Errorf("For test case %q, got zone: %s, want: %s,", tc.desc, zone, tc.expectZone)
+		}
+		if !errors.Is(err, tc.expectErr) {
+			t.Errorf("For test case %q, got error: %s, want: %s,", tc.desc, err, tc.expectErr)
+		}
 	}
 }

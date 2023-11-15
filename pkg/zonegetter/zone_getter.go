@@ -20,9 +20,12 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"time"
 
 	api_v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
+	informerv1 "k8s.io/client-go/informers/core/v1"
+	"k8s.io/client-go/kubernetes/fake"
 	listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/ingress-gce/pkg/annotations"
@@ -95,4 +98,13 @@ func getZoneByProviderID(providerID string) (string, error) {
 		return "", fmt.Errorf("%w: providerID %q is not in valid format", ErrSplitProviderID, providerID)
 	}
 	return matches[2], nil
+}
+
+func FakeZoneGetter() *ZoneGetter {
+	client := fake.NewSimpleClientset()
+	resyncPeriod := 1 * time.Second
+	nodeInformer := informerv1.NewNodeInformer(client, resyncPeriod, utils.NewNamespaceIndexer())
+	return &ZoneGetter{
+		NodeInformer: nodeInformer,
+	}
 }
