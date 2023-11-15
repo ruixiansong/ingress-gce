@@ -42,6 +42,7 @@ import (
 	negtypes "k8s.io/ingress-gce/pkg/neg/types"
 	"k8s.io/ingress-gce/pkg/network"
 	"k8s.io/ingress-gce/pkg/utils"
+	"k8s.io/ingress-gce/pkg/zonegetter"
 	"k8s.io/klog/v2"
 )
 
@@ -3076,5 +3077,115 @@ func getTestEndpointSlices(name, namespace string) []*discovery.EndpointSlice {
 				},
 			},
 		},
+	}
+}
+
+func TestGetEndpointZone(t *testing.T) {
+	NodeWithProviderID := "NodeWithProviderID"
+	NodeWithoutProviderID := "NodeWithoutProviderID"
+	NodeInvalidProviderID := "NodeInvalidProviderID"
+	NodeNotExist := "NodeNotExist"
+
+	zoneGetter := zonegetter.FakeZoneGetter()
+	zoneGetter.NodeInformer.GetIndexer().Add(&v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: NodeWithProviderID,
+		},
+		Spec: v1.NodeSpec{
+			ProviderID: "gce://foo-project/us-central1-a/bar-node",
+		},
+		Status: v1.NodeStatus{
+			Conditions: []v1.NodeCondition{
+				{
+					Type:   v1.NodeReady,
+					Status: v1.ConditionTrue,
+				},
+			},
+		},
+	})
+	zoneGetter.NodeInformer.GetIndexer().Add(&v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: NodeWithoutProviderID,
+		},
+		Spec: v1.NodeSpec{},
+		Status: v1.NodeStatus{
+			Conditions: []v1.NodeCondition{
+				{
+					Type:   v1.NodeReady,
+					Status: v1.ConditionTrue,
+				},
+			},
+		},
+	})
+	zoneGetter.NodeInformer.GetIndexer().Add(&v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: NodeInvalidProviderID,
+		},
+		Spec: v1.NodeSpec{
+			ProviderID: "gce://us-central1-c/bar-node",
+		},
+		Status: v1.NodeStatus{
+			Conditions: []v1.NodeCondition{
+				{
+					Type:   v1.NodeReady,
+					Status: v1.ConditionTrue,
+				},
+			},
+		},
+	})
+	for _, tc := range []struct {
+		desc            string
+		endpointAddress negtypes.AddressData
+		expectZone      string
+		expectErr       error
+	}{
+		{
+			desc: "endpoint data with missing node information",
+			endpointAddress: negtypes.AddressData{
+				NodeName: nil,
+			},
+			expectZone: "",
+			expectErr:  negtypes.ErrEPNodeMissing,
+		},
+		{
+			desc: "endpoint data with node not exist",
+			endpointAddress: negtypes.AddressData{
+				NodeName: &NodeNotExist,
+			},
+			expectZone: "",
+			expectErr:  negtypes.ErrEPNodeNotFound,
+		},
+		{
+			desc: "endpoint data with node without providerID",
+			endpointAddress: negtypes.AddressData{
+				NodeName: &NodeWithoutProviderID,
+			},
+			expectZone: "",
+			expectErr:  negtypes.ErrEPZoneMissing,
+		},
+		{
+			desc: "endpoint data with node with invalid providerID",
+			endpointAddress: negtypes.AddressData{
+				NodeName: &NodeInvalidProviderID,
+			},
+			expectZone: "",
+			expectErr:  negtypes.ErrEPZoneMissing,
+		},
+		{
+			desc: "endpoint data with valid node",
+			endpointAddress: negtypes.AddressData{
+				NodeName: &NodeWithProviderID,
+			},
+			expectZone: "us-central1-a",
+			expectErr:  nil,
+		},
+	} {
+		zone, _, err := getEndpointZone(tc.endpointAddress, zoneGetter)
+		if zone != tc.expectZone {
+			t.Errorf("For test case %q, got zone: %s, want: %s,", tc.desc, zone, tc.expectZone)
+		}
+		if !errors.Is(err, tc.expectErr) {
+			t.Errorf("For test case %q, got error: %s, want: %s,", tc.desc, err, tc.expectErr)
+		}
 	}
 }
