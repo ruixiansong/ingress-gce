@@ -550,7 +550,7 @@ func ListWithPredicate(nodeLister listers.NodeLister, predicate NodeConditionPre
 
 	var filtered []*api_v1.Node
 	for i := range nodes {
-		if predicate(nodes[i]) {
+		if predicate(nodes[i]) && nodes[i].Spec.ProviderID != "" {
 			filtered = append(filtered, nodes[i])
 		}
 	}
